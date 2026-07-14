@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Day13 RAG 问答</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: "Segoe UI", "PingFang SC", sans-serif;
+            background: #0b1220;
+            color: #e2e8f0;
+            padding: 24px;
+            min-height: 100vh;
+            background-image:
+                radial-gradient(ellipse 80% 50% at 10% -10%, rgba(14, 165, 233, 0.18), transparent),
+                radial-gradient(ellipse 60% 40% at 100% 0%, rgba(34, 197, 94, 0.12), transparent);
+        }
+        .wrap { max-width: 980px; margin: 0 auto; }
+        h1 { font-size: 1.45rem; margin-bottom: 6px; }
+        .sub { color: #94a3b8; margin-bottom: 22px; font-size: 0.9rem; line-height: 1.5; }
+        .flow {
+            display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; font-size: 0.8rem;
+        }
+        .flow span {
+            background: #1e293b; border: 1px solid #334155; border-radius: 6px;
+            padding: 4px 10px; color: #7dd3fc;
+        }
+        .panel {
+            background: #111827; border: 1px solid #1f2937; border-radius: 12px;
+            padding: 16px; margin-bottom: 16px;
+        }
+        .panel h2 { font-size: 1rem; margin-bottom: 12px; color: #cbd5e1; }
+        label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; }
+        textarea, input, select {
+            width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #334155;
+            background: #0b1220; color: #f1f5f9; font-size: 0.9rem; margin-bottom: 10px;
+        }
+        textarea { min-height: 110px; resize: vertical; }
+        .row { display: grid; grid-template-columns: 1fr 100px 120px; gap: 12px; align-items: end; }
+        @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+        button {
+            padding: 10px 16px; border: none; border-radius: 8px; background: #0ea5e9;
+            color: #fff; cursor: pointer; font-size: 0.9rem; margin-right: 8px; margin-top: 4px;
+        }
+        button.secondary { background: #475569; }
+        button.danger { background: #be123c; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        pre {
+            margin-top: 12px; padding: 14px; border-radius: 8px; background: #0b1220;
+            border: 1px solid #1f2937; overflow: auto; white-space: pre-wrap; font-size: 0.85rem;
+        }
+        .hint { color: #94a3b8; font-size: 0.85rem; }
+        .stat { color: #38bdf8; font-weight: 600; }
+        .answer {
+            margin-top: 12px; padding: 14px; border-radius: 8px;
+            background: #0f172a; border: 1px solid #334155; line-height: 1.6;
+        }
+        .answer.unknown { border-color: #a16207; color: #fbbf24; }
+        .answer.ok { border-color: #15803d; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #1f2937; vertical-align: top; }
+        th { color: #94a3b8; }
+        .score { color: #67e8f9; font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <h1>最小可用 RAG 问答</h1>
+    <p class="sub">Day13 · Spring AI VectorStore（pgvector）· Embedding: bge-m3 · Chat: qwen2.5-coder:7b<br>
+        流程：提问 → 向量检索 → 拼入 Prompt → LLM 生成（带引用；无依据则「不知道」）</p>
+
+    <div class="flow">
+        <span>1 上传/入库</span>
+        <span>2 similaritySearch</span>
+        <span>3 拼 Prompt</span>
+        <span>4 ChatClient 生成</span>
+        <span>5 返回引用</span>
+    </div>
+
+    <div class="panel">
+        <h2>1. 知识入库</h2>
+        <p class="hint" style="margin-bottom:10px">
+            建议「一段话题一行」。当前片段数：<span class="stat" id="count">—</span>
+        </p>
+        <label>文本（或下面上传文件）</label>
+        <textarea id="ingestText">公司差旅报销制度：市内交通单次超过 50 元需提供发票，每月报销上限 800 元。
+年假政策：转正员工每年享有 10 天带薪年假，入职满 5 年增至 15 天。
+会议室预约：大会议室需提前 2 个工作日在 OA 系统预约，临时会议优先使用小会议室。
+技术栈约定：后端统一使用 Java 17 + Spring Boot 3，向量检索使用 pgvector，维度以 Embedding 模型为准。</textarea>
+        <label>来源名称（可选）</label>
+        <input id="source" type="text" placeholder="例如：公司制度手册" value="demo-handbook">
+        <button id="ingestBtn">文本入库</button>
+        <label style="margin-top:12px">上传 .txt / .md</label>
+        <input id="file" type="file" accept=".txt,.md,text/plain">
+        <button id="uploadBtn" class="secondary">上传入库</button>
+        <button id="refreshBtn" class="secondary">刷新列表</button>
+        <button id="clearBtn" class="danger">清空知识库</button>
+        <pre id="ingestResult">入库结果将显示在这里…</pre>
+        <table>
+            <thead><tr><th>来源</th><th>片段</th><th>doc_id</th></tr></thead>
+            <tbody id="docBody"></tbody>
+        </table>
+    </div>
+
+    <div class="panel">
+        <h2>2. RAG 提问</h2>
+        <div class="row">
+            <div>
+                <label>问题</label>
+                <input id="question" type="text" value="市内交通报销有什么要求？">
+            </div>
+            <div>
+                <label>Top-K</label>
+                <input id="topK" type="number" min="1" max="20" value="4">
+            </div>
+            <div>
+                <label>相似度门槛</label>
+                <input id="threshold" type="number" min="0" max="1" step="0.01" value="0.45">
+            </div>
+        </div>
+        <button id="askBtn">提问</button>
+        <button id="askUnknownBtn" class="secondary">测「不知道」</button>
+        <div id="answerBox" class="answer">回答将显示在这里…</div>
+        <pre id="askMeta">元数据 / 引用详情…</pre>
+        <table>
+            <thead><tr><th>#</th><th>score</th><th>source</th><th>内容</th></tr></thead>
+            <tbody id="citeBody"></tbody>
+        </table>
+    </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function refreshStats() {
+    const s = await fetch('/api/rag/stats').then(r => r.json());
+    $('count').textContent = s.chunkCount;
+    const docs = await fetch('/api/rag/documents?limit=30').then(r => r.json());
+    $('docBody').innerHTML = docs.map(d =>
+        `<tr><td>${esc(d.source || '')}</td><td>${esc(clip(d.content, 80))}</td><td>${esc(clip(d.docId || '', 8))}</td></tr>`
+    ).join('') || '<tr><td colspan="3">暂无数据</td></tr>';
+}
+
+$('ingestBtn').onclick = async () => {
+    $('ingestBtn').disabled = true;
+    try {
+        const res = await fetch('/api/rag/ingest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: $('ingestText').value, source: $('source').value || null })
+        }).then(r => r.json());
+        $('ingestResult').textContent = JSON.stringify(res, null, 2);
+        await refreshStats();
+    } catch (e) {
+        $('ingestResult').textContent = String(e);
+    } finally {
+        $('ingestBtn').disabled = false;
+    }
+};
+
+$('uploadBtn').onclick = async () => {
+    const file = $('file').files[0];
+    if (!file) { alert('请先选择文件'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    $('uploadBtn').disabled = true;
+    try {
+        const res = await fetch('/api/rag/upload', { method: 'POST', body: fd }).then(r => r.json());
+        $('ingestResult').textContent = JSON.stringify(res, null, 2);
+        await refreshStats();
+    } catch (e) {
+        $('ingestResult').textContent = String(e);
+    } finally {
+        $('uploadBtn').disabled = false;
+    }
+};
+
+$('clearBtn').onclick = async () => {
+    if (!confirm('确认清空全部向量片段？')) return;
+    await fetch('/api/rag/documents', { method: 'DELETE' });
+    await refreshStats();
+    $('ingestResult').textContent = '已清空';
+};
+
+$('refreshBtn').onclick = () => refreshStats();
+
+async function ask(q) {
+    $('askBtn').disabled = true;
+    $('askUnknownBtn').disabled = true;
+    $('answerBox').className = 'answer';
+    $('answerBox').textContent = '检索并生成中…';
+    $('citeBody').innerHTML = '';
+    try {
+        const res = await fetch('/api/rag/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                question: q,
+                topK: Number($('topK').value) || 4,
+                similarityThreshold: Number($('threshold').value)
+            })
+        }).then(r => r.json());
+        const unknown = !res.grounded || res.answer === '不知道';
+        $('answerBox').className = 'answer ' + (unknown ? 'unknown' : 'ok');
+        $('answerBox').textContent = res.answer;
+        $('askMeta').textContent = JSON.stringify({
+            grounded: res.grounded,
+            retrieveMs: res.retrieveMs,
+            generateMs: res.generateMs,
+            totalMs: res.totalMs,
+            citationCount: (res.citations || []).length
+        }, null, 2);
+        $('citeBody').innerHTML = (res.citations || []).map(c =>
+            `<tr>
+                <td>${c.index}</td>
+                <td class="score">${c.score == null ? '-' : Number(c.score).toFixed(4)}</td>
+                <td>${esc(c.source || '')}</td>
+                <td>${esc(c.content)}</td>
+             </tr>`
+        ).join('') || '<tr><td colspan="4">无引用（低于相似度门槛）</td></tr>';
+    } catch (e) {
+        $('answerBox').textContent = String(e);
+    } finally {
+        $('askBtn').disabled = false;
+        $('askUnknownBtn').disabled = false;
+    }
+}
+
+$('askBtn').onclick = () => ask($('question').value);
+$('askUnknownBtn').onclick = () => {
+    $('question').value = '明天上海的股市开盘价是多少？';
+    ask($('question').value);
+};
+
+function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function clip(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
+
+refreshStats().catch(console.error);
+</script>
+</body>
+</html>

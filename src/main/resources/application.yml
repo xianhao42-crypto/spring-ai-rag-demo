@@ -1,0 +1,66 @@
+spring:
+  application:
+    name: spring-ai-rag-demo
+  profiles:
+    active: local
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+  ai:
+    # Chat + Embedding 都走本地 Ollama
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: qwen2.5-coder:7b
+          temperature: 0.2
+      embedding:
+        options:
+          model: bge-m3
+    vectorstore:
+      pgvector:
+        # true：自动建扩展 + rag_vector_store 表（维度见 dimensions）
+        initialize-schema: true
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        # bge-m3 = 1024（不是 OpenAI 默认的 1536）
+        dimensions: 1024
+        # 与 Day12 的 documents 表隔离，避免互相覆盖
+        table-name: rag_vector_store
+        schema-name: public
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 1s
+        multiplier: 2
+        max-interval: 30s
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+app:
+  chunk:
+    size: 300
+    overlap: 50
+  rag:
+    # 检索 Top-K
+    top-k: 4
+    # 余弦相似度下限（过低视为「资料无关」→ 直接答不知道）
+    similarity-threshold: 0.45
+
+server:
+  port: 8087
+
+logging:
+  level:
+    root: INFO
+    com.xianhao.rag: DEBUG
+    org.springframework.ai: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
